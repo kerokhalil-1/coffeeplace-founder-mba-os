@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "deploy": "next build && firebase deploy --only hosting"
+    "deploy": "firebase apphosting:backends:deploy"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.11",
