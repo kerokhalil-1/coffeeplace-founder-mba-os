@@ -10,9 +10,13 @@
  * - Add new migrations at the bottom; never reorder or remove old ones.
  */
 
+import { doc, getDoc, setDoc } from 'firebase/firestore'
+import { db } from './firebase'
 import { STORAGE_KEYS } from './storage'
 import type { Course, CoffeeApplication, Note } from './types'
 
+const COLLECTION = 'data'
+const USER_ID = 'kero'
 const MIGRATIONS_KEY = 'coffeeplace_migrations_ran'
 
 function getRan(): Set<string> {
@@ -30,24 +34,24 @@ function markRan(id: string) {
   localStorage.setItem(MIGRATIONS_KEY, JSON.stringify([...ran]))
 }
 
-function insertIfMissing<T extends { id: string }>(key: string, items: T[]) {
+async function insertIfMissing<T extends { id: string }>(key: string, items: T[]) {
+  const docRef = doc(db, COLLECTION, `${USER_ID}_${key}`)
+  const snap = await getDoc(docRef)
   let existing: T[] = []
-  try {
-    existing = JSON.parse(localStorage.getItem(key) || '[]')
-    if (!Array.isArray(existing)) existing = []
-  } catch {
-    existing = []
+  if (snap.exists()) {
+    const data = snap.data().value
+    if (Array.isArray(data)) existing = data as T[]
   }
   const ids = new Set(existing.map(i => i.id))
   const toAdd = items.filter(i => !ids.has(i.id))
   if (toAdd.length > 0) {
-    localStorage.setItem(key, JSON.stringify([...existing, ...toAdd]))
+    await setDoc(docRef, { value: [...existing, ...toAdd] })
   }
 }
 
 // ─── Migration 001 — Business Metrics & Financial Modeling course ─────────────
 
-function m001_businessMetricsCourse() {
+async function m001_businessMetricsCourse() {
   const now = new Date().toISOString()
   const courseId = 'course_biz_metrics_fin_modeling_001'
 
@@ -382,20 +386,20 @@ Blue = inputs | Black = formulas | Green = sheet links | Red = file links`,
     },
   ]
 
-  insertIfMissing(STORAGE_KEYS.COURSES, [course])
-  insertIfMissing(STORAGE_KEYS.APPLICATIONS, applications)
-  insertIfMissing(STORAGE_KEYS.NOTES, notes)
+  await insertIfMissing(STORAGE_KEYS.COURSES, [course])
+  await insertIfMissing(STORAGE_KEYS.APPLICATIONS, applications)
+  await insertIfMissing(STORAGE_KEYS.NOTES, notes)
 }
 
 // ─── Migration Runner ─────────────────────────────────────────────────────────
 
-export function runMigrations() {
+export async function runMigrations() {
   if (typeof window === 'undefined') return
 
   const ran = getRan()
 
   if (!ran.has('m001_business_metrics_course')) {
-    m001_businessMetricsCourse()
+    await m001_businessMetricsCourse()
     markRan('m001_business_metrics_course')
     console.log('[MBA OS] Migration m001 — Business Metrics course imported ✅')
   }

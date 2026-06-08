@@ -9,7 +9,7 @@ import { runMigrations } from '@/lib/migrations'
  */
 export function MigrationRunner() {
   useEffect(() => {
-    runMigrations()
+    runMigrations().catch(err => console.error('[MBA OS] Migration failed:', err))
   }, [])
 
   return null
