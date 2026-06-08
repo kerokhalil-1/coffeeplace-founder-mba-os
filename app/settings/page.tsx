@@ -52,15 +52,15 @@ export default function SettingsPage() {
 
   // Load stats on mount (client-only)
   useEffect(() => {
-    setStats(getStorageStats())
+    getStorageStats().then(setStats)
   }, [])
 
-  const refreshStats = () => setStats(getStorageStats())
+  const refreshStats = () => { getStorageStats().then(setStats) }
 
   // ── Export ──────────────────────────────────────────────────────────────────
 
-  const handleExport = () => {
-    const backup = createBackup()
+  const handleExport = async () => {
+    const backup = await createBackup()
     downloadBackup(backup)
     toast.success('Backup downloaded')
     setExportDone(true)
@@ -92,19 +92,17 @@ export default function SettingsPage() {
     e.target.value = ''
   }
 
-  const handleRestoreConfirm = () => {
+  const handleRestoreConfirm = async () => {
     if (!importedBackup) return
     toast.success('Backup restored — reloading…')
-    restoreBackup(importedBackup)
-    // Page will reload — no further state needed
+    await restoreBackup(importedBackup)
   }
 
   // ── Clear ───────────────────────────────────────────────────────────────────
 
-  const handleClearConfirm = () => {
+  const handleClearConfirm = async () => {
     if (clearInput.trim().toUpperCase() !== 'DELETE') return
-    clearAllData()
-    // Page will reload
+    await clearAllData()
   }
 
   const closeClearModal = () => {

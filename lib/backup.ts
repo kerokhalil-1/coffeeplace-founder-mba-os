@@ -1,24 +1,15 @@
-/**
- * Backup Engine
- *
- * Pure functions for exporting, importing, validating, and clearing
- * all CoffeePlace Founder MBA OS localStorage data.
- *
- * Design decisions:
- * - All write operations (`restoreBackup`, `clearAllData`) call
- *   `window.location.reload()` at the end so all React state re-hydrates
- *   cleanly from the new localStorage state.
- * - `downloadBackup` uses a temporary <a> element — no external libs.
- * - `BACKUP_META_KEY` is intentionally outside STORAGE_KEYS so it
- *   does not appear in backup files (no point backing up the backup timestamp).
- */
-
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore'
+import { db } from './firebase'
 import { STORAGE_KEYS } from './storage'
+
+const COLLECTION = 'data'
+const USER_ID = 'kero'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const BACKUP_VERSION = '1.0'
 export const APP_NAME = 'CoffeePlace Founder MBA OS'
+// Stored in localStorage only — it's metadata, not app data
 export const BACKUP_META_KEY = 'coffeeplace_meta_last_backup'
 
 /** Human-readable labels for each storage key */
@@ -44,32 +35,32 @@ export const KEY_LABELS: Record<string, string> = {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BackupManifest {
-  keys: string[]                    // storage keys included
-  counts: Record<string, number>    // record count per key
+  keys: string[]
+  counts: Record<string, number>
   totalRecords: number
-  storageBytes: number              // estimated bytes at export time
+  storageBytes: number
 }
 
 export interface BackupFile {
-  version: string                   // BACKUP_VERSION
-  appName: string                   // APP_NAME
-  exportedAt: string                // ISO 8601
+  version: string
+  appName: string
+  exportedAt: string
   manifest: BackupManifest
-  data: Record<string, unknown>     // key → parsed JSON value
+  data: Record<string, unknown>
 }
 
 export interface StorageStats {
-  counts: Record<string, number>    // key → record count
+  counts: Record<string, number>
   totalRecords: number
-  storageBytes: number              // estimated (UTF-16 × 2 per char)
-  lastBackup: string | null         // ISO string or null
+  storageBytes: number
+  lastBackup: string | null
 }
 
 export interface ValidationResult {
   valid: boolean
   errors: string[]
   warnings: string[]
-  preview?: {                       // populated if valid
+  preview?: {
     exportedAt: string
     version: string
     totalRecords: number
@@ -77,13 +68,13 @@ export interface ValidationResult {
   }
 }
 
-// ─── Read helpers ─────────────────────────────────────────────────────────────
+// ─── Firestore helpers ────────────────────────────────────────────────────────
 
-function readKey(key: string): unknown | null {
+async function readKey(key: string): Promise<unknown> {
   try {
-    const raw = window.localStorage.getItem(key)
-    if (raw == null) return null
-    return JSON.parse(raw)
+    const snap = await getDoc(doc(db, COLLECTION, `${USER_ID}_${key}`))
+    if (!snap.exists()) return null
+    return snap.data().value ?? null
   } catch {
     return null
   }
@@ -98,37 +89,29 @@ function countRecords(value: unknown): number {
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
-/** Read current storage usage and record counts. Safe to call server-side (returns zeros). */
-export function getStorageStats(): StorageStats {
-  if (typeof window === 'undefined') {
-    return { counts: {}, totalRecords: 0, storageBytes: 0, lastBackup: null }
-  }
-
+export async function getStorageStats(): Promise<StorageStats> {
   let totalRecords = 0
   let storageBytes = 0
   const counts: Record<string, number> = {}
 
   for (const key of Object.values(STORAGE_KEYS)) {
-    const raw = window.localStorage.getItem(key)
-    if (raw) {
-      storageBytes += raw.length * 2 // UTF-16
-      const parsed = readKey(key)
-      const count = countRecords(parsed)
-      counts[key] = count
-      totalRecords += count
-    } else {
-      counts[key] = 0
-    }
+    const value = await readKey(key)
+    const count = countRecords(value)
+    counts[key] = count
+    totalRecords += count
+    if (value != null) storageBytes += JSON.stringify(value).length * 2
   }
 
-  const lastBackup = window.localStorage.getItem(BACKUP_META_KEY)
+  const lastBackup = typeof window !== 'undefined'
+    ? window.localStorage.getItem(BACKUP_META_KEY)
+    : null
+
   return { counts, totalRecords, storageBytes, lastBackup }
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────
 
-/** Collect all app data from localStorage into a BackupFile object. */
-export function createBackup(): BackupFile {
+export async function createBackup(): Promise<BackupFile> {
   const data: Record<string, unknown> = {}
   const counts: Record<string, number> = {}
   const keys: string[] = []
@@ -136,15 +119,14 @@ export function createBackup(): BackupFile {
   let storageBytes = 0
 
   for (const key of Object.values(STORAGE_KEYS)) {
-    const raw = window.localStorage.getItem(key)
-    if (raw != null) {
-      const parsed = readKey(key)
-      data[key] = parsed
+    const value = await readKey(key)
+    if (value != null) {
+      data[key] = value
       keys.push(key)
-      const count = countRecords(parsed)
+      const count = countRecords(value)
       counts[key] = count
       totalRecords += count
-      storageBytes += raw.length * 2
+      storageBytes += JSON.stringify(value).length * 2
     }
   }
 
@@ -157,7 +139,6 @@ export function createBackup(): BackupFile {
   }
 }
 
-/** Trigger a browser file download for the backup. Updates the last-backup meta key. */
 export function downloadBackup(backup: BackupFile): void {
   const json = JSON.stringify(backup, null, 2)
   const blob = new Blob([json], { type: 'application/json' })
@@ -170,13 +151,11 @@ export function downloadBackup(backup: BackupFile): void {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-  // Record the backup timestamp
   window.localStorage.setItem(BACKUP_META_KEY, backup.exportedAt)
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
-/** Validate a parsed JSON object as a CoffeePlace backup file. */
 export function validateBackup(raw: unknown): ValidationResult {
   const errors: string[] = []
   const warnings: string[] = []
@@ -187,16 +166,11 @@ export function validateBackup(raw: unknown): ValidationResult {
 
   const b = raw as Record<string, unknown>
 
-  // Required top-level fields
-  if (typeof b.version !== 'string') {
-    errors.push('Missing or invalid "version" field')
-  }
+  if (typeof b.version !== 'string') errors.push('Missing or invalid "version" field')
   if (b.appName !== APP_NAME) {
     errors.push(`Invalid app name: "${b.appName}". Expected "${APP_NAME}". This backup may be from a different application.`)
   }
-  if (typeof b.exportedAt !== 'string') {
-    errors.push('Missing or invalid "exportedAt" field')
-  }
+  if (typeof b.exportedAt !== 'string') errors.push('Missing or invalid "exportedAt" field')
   if (!b.data || typeof b.data !== 'object' || Array.isArray(b.data)) {
     errors.push('Missing or invalid "data" field — expected an object')
   }
@@ -206,7 +180,6 @@ export function validateBackup(raw: unknown): ValidationResult {
 
   if (errors.length > 0) return { valid: false, errors, warnings }
 
-  // Manifest checks
   const manifest = b.manifest as Record<string, unknown>
   const data = b.data as Record<string, unknown>
 
@@ -215,19 +188,14 @@ export function validateBackup(raw: unknown): ValidationResult {
     return { valid: false, errors, warnings }
   }
 
-  // Check each declared key has data
   for (const key of manifest.keys as string[]) {
-    if (!(key in data)) {
-      errors.push(`Data missing for declared key: "${key}"`)
-    }
+    if (!(key in data)) errors.push(`Data missing for declared key: "${key}"`)
   }
 
-  // Version compatibility warning (not blocking)
   if (typeof b.version === 'string' && b.version !== BACKUP_VERSION) {
     warnings.push(`Backup version ${b.version} differs from current ${BACKUP_VERSION}. Import should work but some fields may differ.`)
   }
 
-  // Keys in backup that aren't in current STORAGE_KEYS (may be legacy)
   const knownKeys = new Set(Object.values(STORAGE_KEYS))
   for (const key of manifest.keys as string[]) {
     if (!(knownKeys as Set<string>).has(key)) {
@@ -255,48 +223,35 @@ export function validateBackup(raw: unknown): ValidationResult {
 
 // ─── Restore ──────────────────────────────────────────────────────────────────
 
-/**
- * Restore a validated backup to localStorage.
- * Steps:
- *   1. Clear all existing coffeeplace_* keys
- *   2. Write all keys from backup.data
- *   3. Update last-backup meta timestamp
- *   4. Reload the page so all React hooks re-hydrate
- *
- * Only call this after the user has confirmed overwrite.
- */
-export function restoreBackup(backup: BackupFile): void {
-  // Step 1: wipe current data
-  for (const key of Object.values(STORAGE_KEYS)) {
-    window.localStorage.removeItem(key)
-  }
+export async function restoreBackup(backup: BackupFile): Promise<void> {
+  // Clear existing Firestore documents
+  await Promise.all(
+    Object.values(STORAGE_KEYS).map(key =>
+      deleteDoc(doc(db, COLLECTION, `${USER_ID}_${key}`)).catch(() => {})
+    )
+  )
 
-  // Step 2: write backup data
-  for (const [key, value] of Object.entries(backup.data)) {
-    try {
-      window.localStorage.setItem(key, JSON.stringify(value))
-    } catch (err) {
-      console.error(`[backup] Failed to restore key "${key}":`, err)
-    }
-  }
+  // Write backup data to Firestore
+  await Promise.all(
+    Object.entries(backup.data).map(([key, value]) =>
+      setDoc(doc(db, COLLECTION, `${USER_ID}_${key}`), { value }).catch(err =>
+        console.error(`[backup] Failed to restore key "${key}":`, err)
+      )
+    )
+  )
 
-  // Step 3: record restore timestamp as last backup
   window.localStorage.setItem(BACKUP_META_KEY, backup.exportedAt)
-
-  // Step 4: reload so all hooks re-hydrate from new localStorage state
   window.location.reload()
 }
 
 // ─── Clear ────────────────────────────────────────────────────────────────────
 
-/**
- * Remove ALL coffeeplace_* keys from localStorage and reload.
- * Only call this after the user has passed multi-step confirmation.
- */
-export function clearAllData(): void {
-  for (const key of Object.values(STORAGE_KEYS)) {
-    window.localStorage.removeItem(key)
-  }
+export async function clearAllData(): Promise<void> {
+  await Promise.all(
+    Object.values(STORAGE_KEYS).map(key =>
+      deleteDoc(doc(db, COLLECTION, `${USER_ID}_${key}`)).catch(() => {})
+    )
+  )
   window.localStorage.removeItem(BACKUP_META_KEY)
   window.location.reload()
 }
