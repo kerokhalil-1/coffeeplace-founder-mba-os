@@ -4,7 +4,6 @@ import { Plus, CalendarCheck, ChevronRight, ChevronDown, Zap, AlertTriangle, Lig
 import { useFirestore } from '@/hooks/useFirestore'
 import { STORAGE_KEYS } from '@/lib/storage'
 import { SEED_BOOKS } from '@/lib/seed-books'
-import { SEED_EXAMS } from '@/lib/seed-exams'
 import { WeeklyReview, Course, Assignment, ExamAttempt, Book } from '@/lib/types'
 import { useToast } from '@/components/ui/Toast'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -113,8 +112,8 @@ export default function WeeklyReviewPage() {
       toast.success('Weekly review updated')
     } else {
       setReviews(prev => [{ ...data, id: generateId(), createdAt: now, updatedAt: now }, ...prev])
+      toast.success('Weekly review saved')
     }
-    toast.success('Weekly review saved')
     setMode('list')
   }
 
